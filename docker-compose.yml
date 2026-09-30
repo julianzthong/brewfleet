@@ -1,0 +1,44 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    ports: ["1883:1883"]
+    volumes: ["./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro"]
+    healthcheck:
+      test: ["CMD", "mosquitto_pub", "-t", "healthcheck", "-m", "ok"]
+      interval: 3s
+      retries: 10
+
+  simulator:
+    build: ./simulator
+    environment:
+      MQTT_URL: mqtt://mosquitto:1883
+      DEVICE_COUNT: 10
+      OTA_FAILURE_RATE: 0      # 0..1, can be changed live via the sim/config topic
+      OTA_DELAY_MS: 3000       # simulated firmware "download" time
+    depends_on:
+      mosquitto: { condition: service_healthy }
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: brewfleet
+      POSTGRES_PASSWORD: brewfleet
+      POSTGRES_DB: brewfleet
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brewfleet"]
+      interval: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    ports: ["3000:3000"]
+    environment:
+      MQTT_URL: mqtt://mosquitto:1883
+      DATABASE_URL: postgres://brewfleet:brewfleet@postgres:5432/brewfleet
+    depends_on:
+      mosquitto: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+
+volumes:
+  pgdata:
