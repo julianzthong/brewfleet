@@ -4,3 +4,10 @@ dist/
 *.log
 .DS_Store
 pgdata/
+
+# terraform
+infra/.terraform/
+infra/certs/
+*.tfstate
+*.tfstate.*
+*.tfvars

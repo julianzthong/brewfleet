@@ -1,17 +1,17 @@
 import { migrate } from './db'
 import { onStatus, onTelemetry } from './devices'
-import { subscribeDevices } from './mqtt'
 import { advanceRollouts, onOtaStatus } from './ota'
 import { onReported } from './shadow'
 import { app } from './routes'
+import { transport } from './transport'
 
 async function main() {
   await migrate()
-  subscribeDevices({
+  await transport.start({
     telemetry: onTelemetry,
     status: onStatus,
-    'shadow/reported': onReported,
-    'ota/status': onOtaStatus,
+    reported: onReported,
+    otaStatus: onOtaStatus,
   })
   // Drives staged rollouts forward; skips a beat if the previous pass is still running.
   let busy = false

@@ -1,8 +1,7 @@
 import { pool } from './db'
 import { touchDevice } from './devices'
-import { publish } from './mqtt'
-
-type Fields = Record<string, unknown>
+import { transport } from './transport'
+import { Fields } from './transport/types'
 
 // delta = the desired fields whose value the device has not reported yet.
 export function computeDelta(desired: Fields, reported: Fields): Fields {
@@ -40,8 +39,8 @@ export async function getShadow(id: string) {
   return { ...s, delta: computeDelta(s.desired, s.reported) }
 }
 
-// Merge the patch into desired, bump the version, and push the full desired state to the device.
-// Retained, so a device that is offline (or restarts) still gets the latest desired on connect.
+// Merge the patch into desired, bump the version, and push the full desired state to the device
+// (the transport makes sure a device that is offline right now still gets it).
 export async function setDesired(id: string, patch: Fields) {
   const { rows } = await pool.query(
     `INSERT INTO device_shadow (device_id, desired, desired_version) VALUES ($1, $2, 1)
@@ -52,7 +51,7 @@ export async function setDesired(id: string, patch: Fields) {
      RETURNING desired, desired_version AS version`,
     [id, patch],
   )
-  await publish(`devices/${id}/shadow/desired`, { version: rows[0].version, state: rows[0].desired }, true)
+  await transport.setDesired(id, rows[0].version, rows[0].desired)
 }
 
 // The device echoes the desired version it applied. Older versions are dropped, so a

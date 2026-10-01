@@ -56,13 +56,19 @@ simulator/src/device.ts     one brewer: telemetry loop, shadow apply, OTA, Last 
 simulator/src/index.ts      spawns N devices, listens on sim/config
 backend/migrations/*.sql    schema, applied once each on startup (tracked in schema_migrations)
 backend/src/db.ts           pg pool, transaction helper, migration runner
-backend/src/mqtt.ts         MQTT client; routes devices/{id}/<suffix> to handlers
+backend/src/transport/     the seam between backend and device network (see "Transports")
+  types.ts                  Transport + DeviceEvents interfaces
+  topics.ts                 topic convention + routeInbound (topic -> DeviceEvents call)
+  mosquitto.ts              MQTT implementation (local)
+  aws.ts                    IoT Core publish + SQS consume implementation
+  index.ts                  picks one from the TRANSPORT env var
 backend/src/devices.ts      telemetry + online status ingest
 backend/src/shadow.ts       desired / reported / delta
 backend/src/ota.ts          staged rollouts
 backend/src/routes.ts       REST endpoints
 backend/src/index.ts        wiring
 demo.sh                     end-to-end walkthrough
+infra/*.tf                  Terraform for the AWS side (see "AWS infrastructure")
 ```
 
 ## API
@@ -115,12 +121,60 @@ next stage starts, and after the last stage → `COMPLETED`. All progress lives 
 | telemetry | PK `(device_id, ts)`; snapshot updated only if `ts` is newer |
 | shadow reported | applied only if `version >=` stored version |
 | shadow desired (device side) | ignored if `version <` last applied; equal version just re-acks |
+| status (online/offline) | applied only if observed at/after the stored `status_at` (the broker's or rule's clock, not ours) |
 | ota/status | job status never leaves a terminal state; device re-sends its result for a repeated `jobId` |
 | job dispatch | `UNIQUE (rollout_id, device_id)`; stage bump guarded by `current_stage = $old` |
 
 **Known simplifications.** One backend instance (the ticker isn't leader-elected); devices
 are in-memory (a restart resets firmware to 1.0.0); a job dispatch lost between commit
 and publish shows up as `TIMED_OUT`; no auth; no telemetry retention.
+
+## Transports
+
+The backend never touches MQTT or AWS directly. Everything goes through `Transport`
+([types.ts](backend/src/transport/types.ts)):
+
+```ts
+interface Transport {
+  start(events: DeviceEvents)                   // device -> backend: telemetry, status, reported, otaStatus
+  setDesired(deviceId, version, state)          // backend -> device
+  dispatchOta(deviceId, { jobId, version })     // backend -> device
+}
+```
+
+| `TRANSPORT=` | Outbound | Inbound |
+|---|---|---|
+| `mosquitto` (default) | MQTT publish (desired is retained) | MQTT subscribe |
+| `aws` | IoT Core `Publish` API (desired is retained) | IoT topic rules -> SQS queue -> long-poll |
+
+Both carry the same topics, so `shadow.ts`, `ota.ts` and `devices.ts` are identical either
+way. The AWS transport is only half of "run on AWS": the simulator still connects to
+Mosquitto (it needs TLS + the certs from `infra/` next), and shadow/jobs are still our own
+tables rather than the native AWS services.
+
+## AWS infrastructure
+
+`infra/` is Terraform (needs terraform >= 1.5 and AWS credentials). It creates:
+
+| File | Resources |
+|---|---|
+| `devices.tf` | an IoT thing + X.509 cert per brewer, one shared policy (a device can connect only as itself and touch only its own topics), certs written to `infra/certs/` |
+| `ingest.tf` | 4 IoT topic rules (telemetry, status, shadow/reported, ota/status) -> SQS queue with a dead-letter queue |
+| `backend.tf` | an IAM policy for the backend (publish desired/ota, consume the queue); you attach it to a principal |
+| `outputs.tf` | the values the backend needs |
+
+```bash
+cd infra && terraform init && terraform apply
+terraform output                      # iot_endpoint, sqs_queue_url, backend_policy_arn
+
+# backend, pointed at AWS instead of Mosquitto:
+TRANSPORT=aws AWS_REGION=$(terraform output -raw region) \
+  IOT_ENDPOINT=$(terraform output -raw iot_endpoint) \
+  SQS_QUEUE_URL=$(terraform output -raw sqs_queue_url) ...
+```
+
+Costs are pennies at this scale, but `terraform destroy` removes everything. The private keys
+live in terraform state and `infra/certs/`; both are git-ignored and suitable for dev only.
 
 ## How this maps to AWS
 

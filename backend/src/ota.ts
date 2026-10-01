@@ -1,5 +1,5 @@
 import { pool, withTx } from './db'
-import { publish } from './mqtt'
+import { transport } from './transport'
 
 const STAGE_TIMEOUT_MS = Number(process.env.OTA_STAGE_TIMEOUT_MS ?? 30000)
 const TERMINAL = ['SUCCEEDED', 'FAILED', 'TIMED_OUT']
@@ -50,7 +50,7 @@ async function insertJobs(tx: { query: typeof pool.query }, r: Rollout, stage: n
 
 function sendJobs(r: Rollout, jobs: Job[]) {
   return Promise.all(
-    jobs.map((j) => publish(`devices/${j.device_id}/ota`, { jobId: j.id, version: r.target_version })),
+    jobs.map((j) => transport.dispatchOta(j.device_id, { jobId: j.id, version: r.target_version })),
   )
 }
 

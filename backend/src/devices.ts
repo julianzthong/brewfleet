@@ -5,10 +5,15 @@ export async function touchDevice(id: string) {
   await pool.query('INSERT INTO devices (id) VALUES ($1) ON CONFLICT DO NOTHING', [id])
 }
 
-// Retained message; the simulator's Last Will publishes {online:false}.
-export async function onStatus(id: string, msg: { online: boolean }) {
-  await touchDevice(id)
-  await pool.query('UPDATE devices SET online = $2 WHERE id = $1', [id, Boolean(msg.online)])
+// Online/offline, from the device's retained status message or its Last Will. Only applied if
+// it was observed at or after the status we already have.
+export async function onStatus(id: string, online: boolean, at: Date) {
+  await pool.query(
+    `INSERT INTO devices (id, online, status_at) VALUES ($1, $2, $3)
+     ON CONFLICT (id) DO UPDATE SET online = EXCLUDED.online, status_at = EXCLUDED.status_at
+       WHERE devices.status_at IS NULL OR devices.status_at <= EXCLUDED.status_at`,
+    [id, online, at],
+  )
 }
 
 export async function onTelemetry(
